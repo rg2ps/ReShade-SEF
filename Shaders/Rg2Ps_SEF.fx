@@ -10,7 +10,7 @@ uniform float _Alpha
 <
     ui_label = "Fusion Range";
     ui_type = "slider";
-    ui_min = 6.0; ui_max = 32.0;
+    ui_min = 8.0; ui_max = 32.0;
 > = 16.0;
 
 uniform float _Range
