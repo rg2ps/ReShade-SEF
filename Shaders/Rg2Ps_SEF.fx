@@ -54,6 +54,10 @@ uniform bool _Debug
     #define MAX_OF_EXPOSURES 16
 #endif
 
+#ifndef DITHER_BIT_DEPTH
+    #define DITHER_BIT_DEPTH 8
+#endif
+
 #include "ReShade.fxh"
 
 texture2D texLowPass_0	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = R8; };
@@ -118,12 +122,9 @@ float safe_pow2(float x)
     return x * x * sign(x);
 }
 
-float triangle_gradient_noise(float2 p)
+float weyl(float2 p)
 {
-    float x = frac(0.5 + p.x * 0.754877666272 + p.y * 0.564189583548);
-    float x_u = x * 2.0 - 1.0;
-    float v = max(-1.0, x_u * rsqrt(abs(x_u))) - sign(x_u);
-    return v * 0.5 + 0.5;
+    return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
 }
 
 /*=============================================================================
@@ -297,21 +298,20 @@ float midgrey_value(float x)
 
 // the original paper proposes using local laplacian for each exposure, what very expensive in real time. 
 // instead that I use the separate extremes/moments processing via weighted mean: v = I * √[(Σ(E²*w)/Σw) / (Σ(√E*w)/Σw)]
-void fusion(inout float3 color, float color_average, int N_max, int N_star, int N, float beta, float r) 
+void fusion_integral(inout float3 color, float L, int N_max, int N_star, int N, float beta, float r) 
 {
     float2 sum = 0.0;
     float2 total = 0.0;
 
-    float top = solve_exposure(color_average, -N_star, N_max, N_star, N, beta);
-    float bottom = solve_exposure(color_average, 0, N_max, N_star, N, beta);
+    float top = solve_exposure(L, -N_star, N_max, N_star, N, beta);
+    float bottom = solve_exposure(L, 0, N_max, N_star, N, beta);
 
     [loop]
     for (int k = -N_star; k <= N; k++) 
     {
-        // use stochastic sampling to approximate continuous integration. this allows us to "smear" a few exposures per pixel
-        float t = frac(r + float(k) * 0.61803398876895) * (beta * beta) * 0.5;
-        float exposure = solve_exposure(color_average, k, N_max, N_star, N, beta);
-        float weight = get_fusion_weights(exposure, k, N_max, N_star, N, beta - t);
+        float t = frac(r + float(k)) / float(N_star);
+        float exposure = solve_exposure(L, k, N_max, N_star, N, beta);
+        float weight = get_fusion_weights(exposure, k, N_max, N_star, N, saturate(beta - t));
 
         // process lights
         [flatten]
@@ -351,19 +351,31 @@ void fusion(inout float3 color, float color_average, int N_max, int N_star, int 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target0)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos, 0).rgb;
-    float color_blur = tex2Dlod(sPyramidResult, float4(texcoord, 0, 0));
-    color_blur = lerp(color_blur * color_blur, color_blur * color_blur * color_blur, _Gamma); // to linear (or cubic)
+    float L = tex2Dlod(sPyramidResult, float4(texcoord, 0, 0));
 
-    float random = triangle_gradient_noise(vpos.xy);
+    L = lerp(L*L, L*L*L, _Gamma); // to linear (or cubic)
+
+    float random = weyl(vpos.xy);
     
     const int M = MAX_OF_EXPOSURES;
-    int N_star = (int)round(float(M - 1) * (_Range + 0.01));
+    int N_star = (int)round(float(M - 1) * _Range);
     int N = (M - 1) - N_star;
     int N_max = max(N_star, N);
     
     color = to_hdr(color);
-    fusion(color, color_blur, N_max, N_star, N, _Beta, random);
+    
+    fusion_integral(color, L, N_max, N_star, N, _Beta, random);
+
     color = from_hdr(color);
+
+    float bit_depth = exp2(DITHER_BIT_DEPTH) - 1;
+
+    float3 qu_min = floor(color * bit_depth) / bit_depth;
+    float3 qu_max = ceil(color * bit_depth) / bit_depth;
+
+    float3 error = saturate((color - qu_min) / (qu_max - qu_min));
+
+    color = lerp(qu_min, qu_max, step(random, error));
     
     output = saturate(color);
 }
