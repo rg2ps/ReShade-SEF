@@ -1,4 +1,4 @@
-Copyright 2025 (с) RG2PS
+Copyright 2026 (с) RG2PS
 
 Licensed under the Apache License, Version 2.0 (the "License");
 you may not use this file except in compliance with the License.
@@ -16,4 +16,5 @@ limitations under the License.
 Third-Party Components:
 - Simulated Exposure Fusion algorithm based on work by:
   Tom Mertens et al. (2007), Charles Hessel (2019)
+
   Original BSD-3-Clause licensed code significantly modified
