@@ -24,26 +24,19 @@ uniform float _Beta
 <
     ui_label = "Compression Range";
     ui_type = "slider";
-    ui_min = 0.4; ui_max = 0.8;
+    ui_min = 0.2; ui_max = 0.8;
 > = 0.5;
 
 uniform float _MidGrey
 <
-    ui_label = "Scene Midgrey";
-    ui_type = "drag";
+    ui_label = "Midgrey";
+    ui_type = "slider";
     ui_min = 0.160; ui_max = 0.200;
 > = 0.180;
 
-uniform float _Gamma
-<
-    ui_label = "Fusion Pre-Gamma";
-    ui_type = "drag";
-    ui_min = 0.0; ui_max = 1.0;
-> = 0.5;
-
 uniform bool _Debug
 <
-    ui_label = "Visualize Exposures Map";
+    ui_label = "Visualize Exposures";
     ui_type = "radio";
 > = false;
 
@@ -60,48 +53,65 @@ uniform bool _Debug
 
 #include "ReShade.fxh"
 
-texture2D texLowPass_0	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = R8; };
-texture2D texLowPass_1	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = R8; };
-texture2D texLowPass_2	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = R8; };
-texture2D texLowPass_3	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = R8; };
-texture2D texLowPass_4	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = R8; };
-texture2D texLowPass_5	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = R8; };
-texture2D texLowPass_6	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = R8; };
-sampler sLowPass_0		{ Texture = texLowPass_0; };
-sampler sLowPass_1		{ Texture = texLowPass_1; };
-sampler sLowPass_2		{ Texture = texLowPass_2; };
-sampler sLowPass_3		{ Texture = texLowPass_3; };
-sampler sLowPass_4		{ Texture = texLowPass_4; };
-sampler sLowPass_5		{ Texture = texLowPass_5; };
-sampler sLowPass_6		{ Texture = texLowPass_6; };
+texture2D texIMG_s0	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = R8; };
+texture2D texIMG_s1	{ Width = BUFFER_WIDTH >> 1; Height = BUFFER_HEIGHT >> 1; Format = R8; };
+texture2D texIMG_s2	{ Width = BUFFER_WIDTH >> 2; Height = BUFFER_HEIGHT >> 2; Format = R8; };
+texture2D texIMG_s3	{ Width = BUFFER_WIDTH >> 3; Height = BUFFER_HEIGHT >> 3; Format = R8; };
+texture2D texIMG_s4	{ Width = BUFFER_WIDTH >> 4; Height = BUFFER_HEIGHT >> 4; Format = R8; };
+texture2D texIMG_s5	{ Width = BUFFER_WIDTH >> 5; Height = BUFFER_HEIGHT >> 5; Format = R8; };
+texture2D texIMG_s6	{ Width = BUFFER_WIDTH >> 6; Height = BUFFER_HEIGHT >> 6; Format = R8; };
+sampler sIMG_s0		{ Texture = texIMG_s0; };
+sampler sIMG_s1		{ Texture = texIMG_s1; };
+sampler sIMG_s2		{ Texture = texIMG_s2; };
+sampler sIMG_s3		{ Texture = texIMG_s3; };
+sampler sIMG_s4		{ Texture = texIMG_s4; };
+sampler sIMG_s5		{ Texture = texIMG_s5; };
+sampler sIMG_s6		{ Texture = texIMG_s6; };
 
-texture2D texInChannel
+texture2D texHDRBuffer
 { 
     Width = BUFFER_WIDTH; 
     Height = BUFFER_HEIGHT; 
     Format = R8; 
 };
 
-sampler sInChannel
+sampler sHDRBuffer
 { 
-    Texture = texInChannel; 
+    Texture = texHDRBuffer; 
 };
 
-texture2D texPyramidResult
+texture2D texGaussianIMG
 { 
     Width = BUFFER_WIDTH;   
     Height = BUFFER_HEIGHT;  
     Format = R8; 
 };
 
-sampler sPyramidResult
+sampler sGaussianIMG
 { 
-    Texture = texPyramidResult; 
+    Texture = texGaussianIMG; 
+};
+
+texture2D texCollapsedExposures
+{ 
+    Width = BUFFER_WIDTH;   
+    Height = BUFFER_HEIGHT;  
+    Format = RG16F; 
+};
+
+sampler sCollapsedExposures
+{ 
+    Texture = texCollapsedExposures; 
 };
 
 /*=============================================================================
 /   Global Helper Functions
 /============================================================================*/
+float luminance(float3 x)
+{
+    return dot(x, float3(0.2126729, 0.7151522, 0.072175));
+}
+
 float3 from_hdr(float3 x) 
 { 
     return x * rsqrt(1.0 + x * x);
@@ -112,17 +122,17 @@ float3 to_hdr(float3 x)
     return x * rsqrt(1.0 - x * x + (1.0 / 255.0));
 }
 
-float safe_sqrt(float x)
+float safesqrt(float x)
 {
     return sqrt(abs(x)) * sign(x);
 }
 
-float safe_pow2(float x)
+float safepow2(float x)
 {
     return x * x * sign(x);
 }
 
-float weyl(float2 p)
+float goldenratio_IGN(float2 p)
 {
     return frac(0.5 + p.x * 0.7548776662467 + p.y * 0.569840290998);
 }
@@ -130,27 +140,21 @@ float weyl(float2 p)
 /*=============================================================================
 /   Shader Entry Points
 /============================================================================*/
-void channel(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void hdrimg(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float color : SV_Target)
 {
-    float3 color = tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb;
-
-    output = (color.r + color.g + color.b) / 3.0;
-
-    if (output < 0.003921568627) output += 0.0625;
+    color = luminance(max(1e-3, tex2Dfetch(ReShade::BackBuffer, vpos.xy, 0).rgb));
 }
 
-float downsample(sampler2D s, float2 uv, float L)
+float downsample(sampler2D s, float2 uv, float mip)
 {
-    float2 xy = BUFFER_PIXEL_SIZE * exp2(L);
+    float2 xy = BUFFER_PIXEL_SIZE * exp2(mip);
 
     float a = tex2Dlod(s, float4(uv.x - xy.x, uv.y + xy.y, 0, 0));
     float b = tex2Dlod(s, float4(uv.x,        uv.y + xy.y, 0, 0));
     float c = tex2Dlod(s, float4(uv.x + xy.x, uv.y + xy.y, 0, 0));
-
     float d = tex2Dlod(s, float4(uv.x - xy.x, uv.y, 0, 0));
     float e = tex2Dlod(s, float4(uv.x,        uv.y, 0, 0));
     float f = tex2Dlod(s, float4(uv.x + xy.x, uv.y, 0, 0));
-
     float g = tex2Dlod(s, float4(uv.x - xy.x, uv.y - xy.y, 0, 0));
     float h = tex2Dlod(s, float4(uv.x,        uv.y - xy.y, 0, 0));
     float i = tex2Dlod(s, float4(uv.x + xy.x, uv.y - xy.y, 0, 0));
@@ -162,52 +166,63 @@ float downsample(sampler2D s, float2 uv, float L)
     return window / 16.0;
 }
 
-void dl_0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+float2 samplecross(sampler2D s, float2 uv)
 {
-    output = downsample(sInChannel, texcoord, 0);
+    float2 tap = BUFFER_PIXEL_SIZE * 1.5;
+    return 
+        0.25 * tex2Dlod(s, float4(uv + float2(-tap.x, 0), 0, 0)).xy +
+        0.25 * tex2Dlod(s, float4(uv + float2( tap.x, 0), 0, 0)).xy +
+        0.25 * tex2Dlod(s, float4(uv + float2(0, -tap.y), 0, 0)).xy +
+        0.25 * tex2Dlod(s, float4(uv + float2(0,  tap.y), 0, 0)).xy;
 }
 
-void dl_1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s0(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_0, texcoord, 1);
+    output = downsample(sHDRBuffer, texcoord, 0);
 }
 
-void dl_2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s1(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_1, texcoord, 2);
+    output = downsample(sIMG_s0, texcoord, 1);
 }
 
-void dl_3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s2(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_2, texcoord,  3);
+    output = downsample(sIMG_s1, texcoord, 2);
 }
 
-void dl_4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s3(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_3, texcoord, 4);
+    output = downsample(sIMG_s2, texcoord,  3);
 }
 
-void dl_5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s4(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_4, texcoord, 5);
+    output = downsample(sIMG_s3, texcoord, 4);
 }
 
-void dl_6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s5(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {
-    output = downsample(sLowPass_5, texcoord, 6);
+    output = downsample(sIMG_s4, texcoord, 5);
 }
 
-void pyramid(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+void s6(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
+{
+    output = downsample(sIMG_s5, texcoord, 6);
+}
+
+void gaussianmap(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float output : SV_Target)
 {   
     output = 
-    (
-        tex2D(sLowPass_0, texcoord) + 
-        tex2D(sLowPass_1, texcoord) + 
-        tex2D(sLowPass_2, texcoord) + 
-        tex2D(sLowPass_3, texcoord) + 
-        tex2D(sLowPass_4, texcoord) + 
-        tex2D(sLowPass_5, texcoord) + 
-        tex2D(sLowPass_6, texcoord)) * 0.14285714;
+	(
+		tex2D(sIMG_s0, texcoord) + 
+		tex2D(sIMG_s1, texcoord) + 
+		tex2D(sIMG_s2, texcoord) + 
+		tex2D(sIMG_s3, texcoord) + 
+		tex2D(sIMG_s4, texcoord) + 
+		tex2D(sIMG_s5, texcoord) + 
+		tex2D(sIMG_s6, texcoord)
+	) * 0.14285714;
 }
 
 /*=============================================================================
@@ -291,93 +306,94 @@ float get_fusion_weights(float t, int k, int N_max, int N_star, int N, float bet
     return w_e * w_c;
 }
 
-float midgrey_value(float x)
+float keyEV(float x, float K = 8)
 {
-    return exp2(log2(_MidGrey / 0.18) * 4.0 * x); // 8 stops
+    return exp2(0.5 * log2(_MidGrey / 0.18) * K * x);
 }
 
-// the original paper proposes using local laplacian for each exposure, what very expensive in real time. 
-// instead that I use the separate extremes/moments processing via weighted mean: v = I * √[(Σ(E²*w)/Σw) / (Σ(√E*w)/Σw)]
-void fusion_integral(inout float3 color, float L, int N_max, int N_star, int N, float beta, float r) 
+// The original paper proposes using local laplacian for each exposure, what very expensive in real time. 
+// Instead that I use the separate extremes/moments processing via weighted mean: v = I * √[(Σ(E²*w)/Σw) / (Σ(√E*w)/Σw)]
+// To ensure continuous that each pixel receives a number of exposures proportional to the maximum number of generated exposures per frame, 
+// we use Monte Carlo integration. This ensures such convergence that each pixel ultimately receives a random exposure value 
+// from 1 to the maximum number per frame (M)
+float3 fusionmap(float3 x, float2 ev)
 {
-    float2 sum = 0.0;
-    float2 total = 0.0;
+    return sqrt((x * ev.x) * (x / ev.y));
+}
 
-    float top = solve_exposure(L, -N_star, N_max, N_star, N, beta);
-    float bottom = solve_exposure(L, 0, N_max, N_star, N, beta);
+float2 fusion_integral(float map, int N_max, int N_star, int N, float beta, float2 vpos) 
+{
+    float2 csum = 0.0;
+    float2 wsum = 0.0;
+
+    float2 key = float2(keyEV(+1), keyEV(-1));
+
+    float top = solve_exposure(map, -N_star, N_max, N_star, N, beta);
+    float bottom = solve_exposure(map, 0, N_max, N_star, N, beta);
 
     [loop]
     for (int k = -N_star; k <= N; k++) 
     {
-        float t = frac(r + float(k)) / float(N_star);
-        float exposure = solve_exposure(L, k, N_max, N_star, N, beta);
-        float weight = get_fusion_weights(exposure, k, N_max, N_star, N, saturate(beta - t));
+        float running = frac(goldenratio_IGN(vpos.xy) + float(k)) / float(N_star);
+        float exposure = solve_exposure(map, k, N_max, N_star, N, beta - running);
+        float weight = get_fusion_weights(exposure, k, N_max, N_star, N, beta + running);
 
         // process lights
         [flatten]
-        if (k < 0) 
-        {
-            float current_exposure = safe_pow2(exposure);
+        if (k < 0) {
+            float current_exposure = safepow2(exposure);
 
             top = current_exposure;
 
-            sum.x += top * weight;
-            total.x += weight;
+            csum.x += top * weight;
+            wsum.x += weight;
         }
 
         // process darks
         [flatten]
-        if (k >= 0) 
-        {
-            float current_exposure = safe_sqrt(exposure);
+        if (k >= 0) {
+            float current_exposure = safesqrt(exposure);
 
             bottom = current_exposure;
             
-            sum.y += bottom * weight;
-            total.y += weight;
+            csum.y += bottom * weight;
+            wsum.y += weight;
         }
     }
     
-    float2 moments = sum / (total + 1e-6);
-    moments += 0.015625; // some bias to avoid zero dev
+    return (csum / wsum) * key;
+}
 
-	float3 median = _Debug ? 0.5 : color;
-    float3 m_clip = median * saturate(moments.x * midgrey_value(+1));
-    float3 m_lift = median / saturate(moments.y * midgrey_value(-1));
-    
-    color = min(65535.0, sqrt(m_clip * m_lift));
+void collapsedEV(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float2 output : SV_Target)
+{
+    float map = tex2Dlod(sGaussianIMG, float4(texcoord, 0, 0));
+
+    const int M = MAX_OF_EXPOSURES;
+
+    int N_star = (int)round(float(M - 1) * _Range);
+    int N = (M - 1) - N_star;
+    int N_max = max(N_star, N);
+
+    output = fusion_integral(pow(map, 2.2), N_max, N_star, N, _Beta, vpos.xy);
 }
 
 void main(float4 vpos : SV_Position, float2 texcoord : TEXCOORD, out float3 output : SV_Target0)
 {
     float3 color = tex2Dfetch(ReShade::BackBuffer, vpos, 0).rgb;
-    float L = tex2Dlod(sPyramidResult, float4(texcoord, 0, 0));
+    float2 range = samplecross(sCollapsedExposures, texcoord);
 
-    L = lerp(L*L, L*L*L, _Gamma); // to linear (or cubic)
-
-    float random = weyl(vpos.xy);
-    
-    const int M = MAX_OF_EXPOSURES;
-    int N_star = (int)round(float(M - 1) * _Range);
-    int N = (M - 1) - N_star;
-    int N_max = max(N_star, N);
-    
     color = to_hdr(color);
-    
-    fusion_integral(color, L, N_max, N_star, N, _Beta, random);
-
+    color = fusionmap(_Debug ? 0.5 : color, range);
     color = from_hdr(color);
 
     float bit_depth = exp2(DITHER_BIT_DEPTH) - 1;
-
     float3 qu_min = floor(color * bit_depth) / bit_depth;
     float3 qu_max = ceil(color * bit_depth) / bit_depth;
-
     float3 error = saturate((color - qu_min) / (qu_max - qu_min));
 
-    color = lerp(qu_min, qu_max, step(random, error));
+    color = lerp(qu_min, qu_max, step(goldenratio_IGN(vpos.xy), error));
     
-    output = saturate(color);
+    output = color;
 }
 
 /*=============================================================================
@@ -390,11 +406,11 @@ ui_tooltip = "									Simulated Exposure Fusion \n\n" "________________________
     pass
     {
 	    VertexShader = PostProcessVS;
-	    PixelShader = channel;
-	    RenderTarget = texInChannel;
+	    PixelShader = hdrimg;
+	    RenderTarget = texHDRBuffer;
     }
 
-    #define process(i) pass { VertexShader = PostProcessVS; PixelShader = dl_##i; RenderTarget = texLowPass_##i; }
+    #define process(i) pass { VertexShader = PostProcessVS; PixelShader = s##i; RenderTarget = texIMG_s##i; }
 
     process(0)
     process(1)
@@ -407,8 +423,15 @@ ui_tooltip = "									Simulated Exposure Fusion \n\n" "________________________
     pass
     {
 	    VertexShader = PostProcessVS;
-	    PixelShader = pyramid;
-	    RenderTarget = texPyramidResult;
+	    PixelShader = gaussianmap;
+	    RenderTarget = texGaussianIMG;
+    }
+
+    pass
+    {
+	    VertexShader = PostProcessVS;
+	    PixelShader = collapsedEV;
+	    RenderTarget = texCollapsedExposures;
     }
 
     pass
